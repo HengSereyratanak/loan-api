@@ -196,6 +196,8 @@ $ docker buildx build -f Dockerfile.prod --platform linux/amd64,linux/arm64 \
 
 Docker Hub repository: https://hub.docker.com/r/meghoing/loan-api/tags (tags `1.0.0` and `latest`)
 
+![Docker Hub repository page](evidence/docker-hub.png)
+
 Pull and run from the registry with no local files:
 
 ```console
