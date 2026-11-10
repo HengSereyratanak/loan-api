@@ -1,0 +1,33 @@
+# VCS and editors
+.git
+.gitignore
+.github
+.vscode
+.idea
+.devcontainer
+*.md
+
+# Python caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.venv/
+venv/
+env/
+
+# Secrets
+.env
+.env.*
+*.pem
+*.key
+
+# Not needed
+tests/
+train.py
+compose.yaml
+init.sql
+Dockerfile*
+evidence/
+*.zip
+.DS_Store
