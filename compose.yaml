@@ -3,33 +3,31 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.prod
-    image: loan-api:1.0.0
     ports:
-      # Override with API_PORT
-      - "${API_PORT:-8000}:8000"
+      - "8000:8000"
     environment:
-      MODEL_PATH: /app/model/loan_model.joblib
-      DATABASE_URL: postgresql://loan:loan_dev_password@db:5432/loans
+      MODEL_PATH: /app/model.joblib
     depends_on:
       db:
         condition: service_healthy
-    restart: unless-stopped
-
   db:
-    image: postgres:16.15-alpine
+    image: postgres:17
     environment:
-      POSTGRES_USER: loan
-      # Dev only
-      POSTGRES_PASSWORD: loan_dev_password
+      POSTGRES_USER: loans
+      POSTGRES_PASSWORD: loans_dev_only # Dev only
       POSTGRES_DB: loans
     volumes:
-      - db-data:/var/lib/postgresql/data
+      - pgdata:/var/lib/postgresql/data
       - ./init.sql:/docker-entrypoint-initdb.d/init.sql:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U loan -d loans"]
+      test: ["CMD-SHELL", "pg_isready -U loans -d loans"]
       interval: 5s
-      timeout: 3s
       retries: 10
-
+  adminer:
+    image: adminer:4.8.1
+    ports:
+      - "8080:8080"
+    depends_on:
+      - db
 volumes:
-  db-data:
+  pgdata:

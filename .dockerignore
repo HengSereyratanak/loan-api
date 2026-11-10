@@ -1,33 +1,15 @@
-# VCS and editors
+# Git
 .git
 .gitignore
-.github
-.vscode
-.idea
-.devcontainer
-*.md
-
-# Python caches
+# Caches and environments
+.venv
 __pycache__/
-*.py[cod]
+*.pyc
 .pytest_cache/
-.ruff_cache/
-.venv/
-venv/
-env/
-
-# Secrets
+# Dev config
+.devcontainer/
 .env
 .env.*
-*.pem
-*.key
-
-# Not needed
-tests/
-train.py
-compose.yaml
-init.sql
-Dockerfile*
-evidence/
-*.zip
-.DS_Store
+# Local models
+model.joblib
+models/

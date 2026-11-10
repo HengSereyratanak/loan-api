@@ -1,245 +1,211 @@
-# Production Image Checklist: `loan-api:1.0.0`
+# Production Checklist: loan-api
 
-Evidence that the production image (`Dockerfile.prod`) meets each requirement.
-All commands were run against the image built with:
-
-```bash
-docker build -f Dockerfile.prod -t loan-api:1.0.0 .
-```
+Evidence for each requirement in the Lesson 4.7 table.
 
 | # | Requirement | Status |
 |---|-------------|--------|
-| 1 | Small, pinned base image | Done |
-| 2 | Multi-stage build, no build or dev tools in the final image | Done |
-| 3 | Runs as a non-root user | Done |
-| 4 | Health check reports the container as healthy | Done |
-| 5 | Configuration from environment variables (`MODEL_PATH`) | Done |
-| 6 | No secrets in the image or repository, `.dockerignore` in place | Done |
-| 7 | Vulnerability scan with Trivy, HIGH/CRITICAL reviewed | Done (0 CRITICAL, HIGH explained below) |
+| 1 | Multi-stage `Dockerfile.prod`: slim base, non-root user, HEALTHCHECK | Done |
+| 2 | `.dockerignore` excludes Git, caches, local models and dev config | Done |
+| 3 | Model path configurable with `MODEL_PATH` | Done |
+| 4 | `compose.yaml` runs API + PostgreSQL + Adminer, with the API built from `Dockerfile.prod` | Done |
+| 5 | Image at least 40% smaller than the full-Python variant | Done (62.9% smaller) |
+| 6 | No HIGH or CRITICAL findings without a note explaining them | Done (0 CRITICAL, every HIGH noted) |
+| 7 | Image published as `meghoing/loan-api:1.0.0` and `:latest` | Done |
 
 ---
 
-## 1. Small, pinned base image
+## 1. Multi-stage Dockerfile.prod: slim base, non-root user, HEALTHCHECK
 
-The base is the `slim` variant, pinned to an exact Python and Debian release (no `latest`).
+File review (`Dockerfile.prod`):
 
-```console
-$ grep -n "^FROM" Dockerfile.prod
-4:FROM python:3.12.16-slim-trixie AS builder
-18:FROM python:3.12.16-slim-trixie AS runtime
-```
-
-## 2. Multi-stage build, no build or dev tools in the final image
-
-Dependencies are installed into `/opt/venv` in the `builder` stage, and only that
-venv, `main.py` and the model are copied into the `runtime` stage. pip, pytest and
-ruff are not in the production image.
+- Two stages: `FROM python:3.12-slim AS builder` installs packages into `/opt/venv` and trains the model; the second `FROM python:3.12-slim` copies in only `/opt/venv`, `model.joblib`, `main.py` and `schemas.py`.
+- `useradd --create-home --uid 1000 appuser` and `USER appuser`.
+- `HEALTHCHECK` calls `/health` every 30 seconds with Python's `urllib`.
 
 ```console
-$ docker images --format "table {{.Repository}}:{{.Tag}}\t{{.Size}}" | grep -E "loan-api|REPOSITORY"
-REPOSITORY:TAG                                      SIZE
-loan-api:1.0.0                                      636MB
-loan-api:dev                                        691MB
-
-$ docker run --rm --entrypoint sh loan-api:1.0.0 -c "which pip gcc pytest ruff || echo none of pip/gcc/pytest/ruff found"
-none of pip/gcc/pytest/ruff found
+$ docker build -t loan-api:prod -f Dockerfile.prod .
+$ docker run -d --name prod -p 8000:8000 loan-api:prod
+$ docker exec prod whoami
+appuser
+$ sleep 35
+$ docker ps --filter name=prod
+NAMES     IMAGE           STATUS
+prod      loan-api:prod   Up 35 seconds (healthy)
+$ docker rm -f prod
 ```
 
-Most of the remaining size is scikit-learn, SciPy and NumPy, which the model needs at runtime.
-
-## 3. Runs as a non-root user
+For comparison, the single-stage image runs as root:
 
 ```console
-$ docker image inspect loan-api:1.0.0 --format "User: {{.Config.User}}"
-User: app
-
-$ docker run --rm loan-api:1.0.0 id
-uid=10001(app) gid=10001(app) groups=10001(app)
+$ docker run --rm --entrypoint whoami loan-api:slim
+root
 ```
 
-## 4. Health check reports the container as healthy
+## 2. .dockerignore excludes Git, caches, local models and dev config
+
+File review (`.dockerignore`):
+
+```text
+# Git
+.git
+.gitignore
+# Caches and environments
+.venv
+__pycache__/
+*.pyc
+.pytest_cache/
+# Dev config
+.devcontainer/
+.env
+.env.*
+# Local models
+model.joblib
+models/
+```
+
+The image trains its own model in the builder stage, so no model file from this machine is copied in.
+Only the app files and the image-trained model are in `/app`:
 
 ```console
-$ docker image inspect loan-api:1.0.0 --format "{{json .Config.Healthcheck}}"
-{"Test":["CMD","python","-c","import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2).status == 200 else 1)"],"Interval":30000000000,"Timeout":3000000000,"StartPeriod":10000000000,"Retries":3}
-
-$ docker run -d --name loan-hc -p 8011:8000 loan-api:1.0.0
-$ docker inspect loan-hc --format "{{.State.Health.Status}}"
-healthy
-$ docker ps --filter name=loan-hc --format "{{.Names}}  {{.Status}}"
-loan-hc  Up 20 seconds (healthy)
+$ docker run --rm --entrypoint ls loan-api:prod -la /app
+-rw-r--r-- 1 root root 2105 main.py
+-rw-r--r-- 1 root root 1940 model.joblib
+-rw-r--r-- 1 root root  837 schemas.py
 ```
 
-With Compose (`api` builds from `Dockerfile.prod`, `db` is Postgres with `init.sql`):
+## 3. Model path configurable with MODEL_PATH
+
+`main.py` reads `MODEL_PATH = os.getenv("MODEL_PATH", "model.joblib")` and loads it with `joblib.load(MODEL_PATH)`.
+
+Default (model trained inside the image):
+
+```console
+$ docker run --rm -p 8000:8000 loan-api:prod
+$ curl localhost:8000/health
+{"status":"ok","model_version":"1.0.0"}
+```
+
+Mounted 1.1.0 model, same image, no rebuild:
+
+```console
+$ python train.py --version 1.1.0 --out models/model.joblib
+Saved model 1.1.0 to models/model.joblib (test AUC 0.923)
+
+$ docker run --rm -p 8000:8000 \
+    -v "$(pwd)/models:/models:ro" \
+    -e MODEL_PATH=/models/model.joblib \
+    loan-api:prod
+$ curl localhost:8000/health
+{"status":"ok","model_version":"1.1.0"}
+```
+
+## 4. compose.yaml runs API + PostgreSQL + Adminer, with the API built from Dockerfile.prod
+
+`compose.yaml` builds `api` with `context: .` and `dockerfile: Dockerfile.prod`, and runs `db` (`postgres:17`, seeded by `init.sql`) and `adminer` (`adminer:4.8.1`).
 
 ```console
 $ docker compose up -d --build
-$ docker compose ps --format 'table {{.Service}}\t{{.Status}}\t{{.Ports}}'
-SERVICE   STATUS                    PORTS
-api       Up 15 seconds (healthy)   0.0.0.0:8000->8000/tcp
-db        Up 20 seconds (healthy)   5432/tcp
-
-$ curl -s -X POST localhost:8000/predict -H 'Content-Type: application/json' \
-    -d '{"income":800,"loan_amount":15000,"term_months":12,"credit_score":450,"employment_years":1}'
-{"score":0.9909,"risk_band":"high","decision":"reject","model_version":"1.0.0"}
-
-$ docker compose exec -T db psql -U loan -d loans -c "SELECT id, score, risk_band, decision FROM predictions ORDER BY id;"
- id | score  | risk_band | decision
-----+--------+-----------+----------
-  1 | 0.3983 | medium    | approve
-  2 | 0.9909 | high      | reject
-(2 rows)
+$ sleep 35
+$ docker compose ps
+SERVICE   IMAGE           STATUS
+adminer   adminer:4.8.1   Up 40 seconds
+api       loan-api-api    Up 35 seconds (healthy)
+db        postgres:17     Up 40 seconds (healthy)
 ```
 
-## 5. Configuration from environment variables (`MODEL_PATH`)
-
-The model location is read from `MODEL_PATH`; nothing is hard-coded.
+The API answers, and the seed data is in PostgreSQL:
 
 ```console
-$ grep -n "MODEL_PATH" main.py Dockerfile.prod compose.yaml
-main.py:13:MODEL_PATH = os.getenv("MODEL_PATH", "model/loan_model.joblib")
-main.py:25:        raise RuntimeError(f"Model file not found at MODEL_PATH={path}")
-main.py:33:    state["model"] = load_model(MODEL_PATH)
-Dockerfile.prod:27:    MODEL_PATH=/app/model/loan_model.joblib
-compose.yaml:11:      MODEL_PATH: /app/model/loan_model.joblib
+$ curl -X POST localhost:8000/api/v1/predictions -H 'Content-Type: application/json' \
+    -d '{"amount_usd":1500,"term_months":12,"monthly_income_usd":350.0,"previous_loans":1,"late_payments":0}'
+{"default_probability":0.095,"risk_band":"low","model_version":"1.0.0"}
+
+$ docker compose exec db psql -U loans -d loans -c "SELECT b.full_name, a.amount_usd, a.term_months, a.status FROM loan_applications a JOIN borrowers b ON b.id = a.borrower_id ORDER BY a.id;"
+   full_name    | amount_usd | term_months |  status
+----------------+------------+-------------+----------
+ Sok Dara       |       1500 |          12 | pending
+ Chan Sreyneang |        800 |           6 | approved
+ Kim Vuthy      |       3200 |          24 | pending
+ Heng Malis     |       2000 |          18 | rejected
+ Sok Dara       |        600 |           6 | pending
+ Heng Malis     |       1200 |          12 | pending
+(6 rows)
 ```
 
-Changing the variable changes where the model is loaded from:
+## 5. Image at least 40% smaller than the full-Python variant
 
 ```console
-$ docker run --rm -e MODEL_PATH=/app/model/missing.joblib loan-api:1.0.0
-    raise RuntimeError(f"Model file not found at MODEL_PATH={path}")
-
-$ docker run -d -p 8012:8000 -e MODEL_PATH=/models/custom.joblib \
-    -v "$PWD/model/loan_model.joblib:/models/custom.joblib:ro" loan-api:1.0.0
-$ docker logs <container>
-INFO:loan-api:Loaded model 1.0.0 from /models/custom.joblib
+$ sed 's/^FROM python:3.12-slim/FROM python:3.12/' Dockerfile > Dockerfile.full
+$ docker build -t loan-api:full -f Dockerfile.full .
+$ docker build -t loan-api:slim -f Dockerfile .
+$ docker build -t loan-api:prod -f Dockerfile.prod .
+$ docker images loan-api
+REPOSITORY   TAG       IMAGE ID       SIZE
+loan-api     prod      a453c5bb9251   818MB
+loan-api     slim      21dabc9050d8   800MB
+loan-api     full      76bf3cc66b5c   2.2GB
 ```
 
-## 6. No secrets in the image or repository, `.dockerignore` in place
+prod is 818 MB against 2,202 MB for full: **62.9% smaller** (required: at least 40%).
 
-`.dockerignore` keeps `.git`, virtual environments, `.env` files, keys and tests out of the build context:
+## 6. No HIGH or CRITICAL findings without a note explaining them
+
+Scanned with Trivy pinned to `0.69.3` (the version Lesson 4.6 lists as safe after the 2026 Trivy compromise). Full report: [`evidence/trivy-report.txt`](evidence/trivy-report.txt).
 
 ```console
-$ grep -E "^\.env|^\.git$|venv|tests" .dockerignore
-.git
-.venv/
-venv/
-.env
-.env.*
-tests/
+$ docker run --rm -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy:0.69.3 image --severity HIGH,CRITICAL loan-api:prod
 ```
 
-Only the app and the model are in `/app`:
+| Scan | Debian packages | Python packages |
+|------|-----------------|-----------------|
+| First scan | HIGH 49, CRITICAL 0 | 0 |
+| After rebuild | HIGH 47, CRITICAL 0 | 0 |
+
+Notes on each finding:
+
+| CVE | Packages | Fix available | Note |
+|-----|----------|---------------|------|
+| CVE-2026-76844, CVE-2026-85091 | zlib1g | Yes | **Rebuilt and fixed.** Added `apt-get upgrade` to the runtime stage of `Dockerfile.prod` and rebuilt with `--pull`. No longer reported. |
+| CVE-2026-76642, CVE-2026-78408, CVE-2026-78409, CVE-2026-78410 | util-linux, mount, login, bsdutils, libblkid1, libmount1, libsmartcols1, libuuid1, liblastlog2-2 | No | Cannot be fixed yet: Debian has not released a fix. These affect `mount` and `nsenter`; the API never calls them and runs as `appuser` without extra privileges. |
+| CVE-2025-69720 | libncursesw6, libtinfo6, ncurses-base, ncurses-bin | No | Cannot be fixed yet. The API has no terminal interface and does not use ncurses. |
+| CVE-2026-119373, CVE-2026-119374, CVE-2026-119379 | libsqlite3-0 | No | Cannot be fixed yet. The API does not open SQLite databases. |
+| CVE-2026-16742 | libsystemd0, libudev1 | No | Cannot be fixed yet. systemd does not run inside the container. |
+| CVE-2026-54369 | libacl1 | No | Cannot be fixed yet. The API does not manage file ACLs. |
+| CVE-2026-9538 | perl-base | Deferred by Debian | Cannot be fixed yet. The API never runs Perl or unpacks tar files. |
+
+All remaining findings are in packages that are part of the Debian base image. The `apt-get upgrade` step picks up fixes automatically, so the image will be rebuilt and scanned again when Debian publishes them.
+
+No secrets were found in the image or the repository:
 
 ```console
-$ docker run --rm --entrypoint ls loan-api:1.0.0 -la /app /app/model
-/app:
--rw-r--r-- 1 app  app  3725 main.py
-drwxr-xr-x 2 app  app  4096 model
-
-/app/model:
--rw-r--r-- 1 app  app  1610 loan_model.joblib
+$ trivy image --scanners secret loan-api:prod   -> 0 secrets
+$ trivy fs --scanners secret .                  -> 0 secrets
 ```
 
-Environment variables in the image (no passwords or tokens):
+The only password in the repository is the development-only database password in `compose.yaml`.
+
+## 7. Image published as meghoing/loan-api:1.0.0 and :latest
+
+Logged in with a Docker Hub access token (`docker login`), then built and pushed both tags. The image is built for `linux/amd64` and `linux/arm64`, so it runs on Codespaces and servers as well as Apple Silicon:
 
 ```console
-$ docker image inspect loan-api:1.0.0 --format "{{range .Config.Env}}{{println .}}{{end}}"
-PATH=/opt/venv/bin:/usr/local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-LANG=C.UTF-8
-GPG_KEY=7169605F62C751356D054A26A821E680E5FA6305
-PYTHON_VERSION=3.12.16
-PYTHON_SHA256=b5796915dc45ff745cfb4e990a7e7c93d6f546328a102ce31448d69ebc37575c
-PYTHONDONTWRITEBYTECODE=1
-PYTHONUNBUFFERED=1
-MODEL_PATH=/app/model/loan_model.joblib
+$ DOCKER_USER=meghoing
+$ docker buildx build -f Dockerfile.prod --platform linux/amd64,linux/arm64 \
+    -t $DOCKER_USER/loan-api:1.0.0 -t $DOCKER_USER/loan-api:latest --push .
 ```
 
-> `GPG_KEY` comes from the official `python` base image. It is the **public** key fingerprint
-> used to verify the Python download, not a secret.
+Docker Hub repository: https://hub.docker.com/r/meghoing/loan-api/tags (tags `1.0.0` and `latest`)
 
-Trivy secret scans of the image and the repository:
+Pull and run from the registry with no local files:
 
 ```console
-$ trivy image --scanners secret --format json loan-api:1.0.0   # count of findings
-image secrets found: 0
-
-$ trivy fs --scanners secret --format json .                   # count of findings
-repo secrets found: 0
+$ docker compose down
+$ docker rmi $DOCKER_USER/loan-api:1.0.0 $DOCKER_USER/loan-api:latest loan-api:prod
+$ docker run --rm -p 8000:8000 $DOCKER_USER/loan-api:1.0.0
+Unable to find image 'meghoing/loan-api:1.0.0' locally
+1.0.0: Pulling from meghoing/loan-api
 ```
 
-The only credential in the repository is the development-only Postgres password in
-`compose.yaml` (`loan_dev_password`), which the task allows. `.env` is in `.gitignore`.
+`/docs` with the **200** response from `POST /api/v1/predictions`:
 
-## 7. Vulnerability scan with Trivy
-
-### First scan (before fixing)
-
-```console
-$ trivy image --severity HIGH,CRITICAL loan-api:1.0.0
-loan-api:1.0.0 (debian 13.7)   HIGH: 49   CRITICAL: 0
-Python packages                HIGH: 0    CRITICAL: 0
-```
-
-Two of the 49 had a fix available: `zlib1g` CVE-2026-76844 and CVE-2026-85091
-(fixed in `1:1.3.dfsg+really1.3.1-1+deb13u1`).
-
-### Fix and rebuild
-
-Added `apt-get update && apt-get upgrade -y` to the runtime stage of `Dockerfile.prod`, then rebuilt.
-
-### Final scan (after rebuild)
-
-```console
-$ trivy image --severity HIGH,CRITICAL --table-mode summary loan-api:1.0.0
-┌──────────────────────────────┬────────────┬─────────────────┐
-│ Target                       │ Type       │ Vulnerabilities │
-├──────────────────────────────┼────────────┼─────────────────┤
-│ loan-api:1.0.0 (debian 13.7) │ debian     │       47        │
-│ opt/venv/.../fastapi ...     │ python-pkg │        0        │
-│ (all other Python packages)  │ python-pkg │        0        │
-└──────────────────────────────┴────────────┴─────────────────┘
-CRITICAL: 0   HIGH: 47 (all status "affected" or "fix_deferred": no fixed version published)
-```
-
-### Notes on each remaining HIGH finding
-
-| CVE | Packages | Status | Note |
-|-----|----------|--------|------|
-| CVE-2026-76844, CVE-2026-85091 | zlib1g | **Fixed** | Rebuilt with `apt-get upgrade`; no longer reported. |
-| CVE-2026-76642, CVE-2026-78408, CVE-2026-78409, CVE-2026-78410 | util-linux, mount, login, bsdutils, libblkid1, libmount1, libsmartcols1, libuuid1, liblastlog2-2 (36 findings) | Cannot fix yet | Debian has not released a fix. These are mount/nsenter issues; the API never calls `mount` or `nsenter` and runs as non-root without extra capabilities. |
-| CVE-2025-69720 | libncursesw6, libtinfo6, ncurses-base, ncurses-bin | Cannot fix yet | No fixed version in Debian 13. The API has no terminal UI and never uses ncurses. |
-| CVE-2026-119373, CVE-2026-119374, CVE-2026-119379 | libsqlite3-0 | Cannot fix yet | No fix in Debian yet. The API stores data in Postgres and never opens a SQLite database. |
-| CVE-2026-16742 | libsystemd0, libudev1 | Cannot fix yet | No fix in Debian yet. systemd does not run inside the container. |
-| CVE-2026-54369 | libacl1 | Cannot fix yet | No fix in Debian yet. The API does not manage file ACLs. |
-| CVE-2026-9538 | perl-base | Fix deferred by Debian | Archive::Tar issue; the API never runs Perl or unpacks tar files. |
-
-These are all part of the Debian base image and are required by the OS. The plan is to
-rebuild the image as soon as Debian publishes fixes (the `apt-get upgrade` step picks them up automatically).
-
----
-
-## Publish to Docker Hub (Step 3)
-
-```bash
-docker login
-docker buildx build -f Dockerfile.prod \
-  --platform linux/amd64,linux/arm64 \
-  -t meghoing/loan-api:1.0.0 \
-  -t meghoing/loan-api:latest \
-  --push .
-```
-
-Docker Hub repository: `https://hub.docker.com/r/meghoing/loan-api` (tags `1.0.0` and `latest`)
-
-## Pull and run from the registry (Step 4)
-
-```bash
-docker rmi meghoing/loan-api:1.0.0 meghoing/loan-api:latest loan-api:1.0.0
-docker run --rm -p 8000:8000 meghoing/loan-api:1.0.0
-```
-
-Screenshot of `/docs` with the **200** response from `POST /predict`:
-
-![Swagger UI showing 200 response](evidence/docs-200.png)
+![Swagger UI showing a 200 response](evidence/docs-200.png)

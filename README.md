@@ -1,56 +1,33 @@
 # loan-api
 
-FastAPI service that scores loan applications with a scikit-learn model and
-returns the probability of default, a risk band and a decision.
+Loan Application Service: stores loan applications and scores their default risk.
+Endpoints: `GET /health`, `POST /api/v1/predictions`, `/api/v1/applications`.
 
 ## Files
 
 | File | Purpose |
 |------|---------|
-| `main.py` | The API. Reads the model from `MODEL_PATH`; saves predictions to Postgres when `DATABASE_URL` is set. |
-| `train.py` | Trains the model on synthetic data and writes `model/loan_model.joblib`. |
-| `Dockerfile` | Development image (dev tools, auto reload). |
-| `Dockerfile.prod` | Production image: multi-stage, pinned slim base, non-root user, health check. |
-| `.dockerignore` | Keeps `.git`, venvs, `.env`, tests and docs out of the build context. |
-| `compose.yaml` | Runs the API (built from `Dockerfile.prod`) with Postgres. |
-| `init.sql` | Creates the `predictions` table on the first database start. |
-| `requirements.txt` / `requirements-dev.txt` | Runtime and development dependencies (pinned). |
-| `CHECKLIST.md` | Evidence for each production requirement. |
+| `main.py`, `schemas.py` | FastAPI app; model path from `MODEL_PATH` |
+| `train.py` | Trains the model (`--version`, `--out`) |
+| `Dockerfile` | Single-stage image (Lesson 4.3) |
+| `Dockerfile.prod` | Multi-stage production image: slim, `appuser`, `HEALTHCHECK` |
+| `.dockerignore` | Excludes Git, caches, local models and dev config |
+| `compose.yaml` | API + PostgreSQL + Adminer |
+| `init.sql` | Seed data for PostgreSQL |
+| `requirements.txt` / `requirements-dev.txt` | Production / development packages |
+| `CHECKLIST.md` | Evidence for each requirement |
 
 ## Run
 
 ```bash
-# With Compose (API + Postgres)
-docker compose up -d --build
-# open http://localhost:8000/docs
-
-# If port 8000 is busy on your machine
-API_PORT=8010 docker compose up -d --build
-
-# From Docker Hub, no local files needed
+docker compose up -d --build          # API on :8000, Adminer on :8080
 docker run --rm -p 8000:8000 meghoing/loan-api:1.0.0
 ```
 
-Example request:
-
-```bash
-curl -X POST localhost:8000/predict -H 'Content-Type: application/json' \
-  -d '{"income":1200,"loan_amount":5000,"term_months":24,"credit_score":680,"employment_years":4}'
-```
-
-## Development
+## Develop
 
 ```bash
 pip install -r requirements-dev.txt
-python train.py      # rebuild the model
-pytest -q            # run tests
-ruff check .         # lint
+python train.py
+pytest -v
 ```
-
-## Configuration
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `MODEL_PATH` | `/app/model/loan_model.joblib` | Path to the trained model file. |
-| `DATABASE_URL` | not set | Postgres URL. When unset, predictions are not stored. |
-| `LOG_LEVEL` | `INFO` | Python log level. |
