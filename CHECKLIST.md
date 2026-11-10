@@ -226,18 +226,18 @@ rebuild the image as soon as Debian publishes fixes (the `apt-get upgrade` step 
 docker login
 docker buildx build -f Dockerfile.prod \
   --platform linux/amd64,linux/arm64 \
-  -t <dockerhub-username>/loan-api:1.0.0 \
-  -t <dockerhub-username>/loan-api:latest \
+  -t meghoing/loan-api:1.0.0 \
+  -t meghoing/loan-api:latest \
   --push .
 ```
 
-Docker Hub repository: `https://hub.docker.com/r/<dockerhub-username>/loan-api` (tags `1.0.0` and `latest`)
+Docker Hub repository: `https://hub.docker.com/r/meghoing/loan-api` (tags `1.0.0` and `latest`)
 
 ## Pull and run from the registry (Step 4)
 
 ```bash
-docker rmi <dockerhub-username>/loan-api:1.0.0 <dockerhub-username>/loan-api:latest loan-api:1.0.0
-docker run --rm -p 8000:8000 <dockerhub-username>/loan-api:1.0.0
+docker rmi meghoing/loan-api:1.0.0 meghoing/loan-api:latest loan-api:1.0.0
+docker run --rm -p 8000:8000 meghoing/loan-api:1.0.0
 ```
 
 Screenshot of `/docs` with the **200** response from `POST /predict`:

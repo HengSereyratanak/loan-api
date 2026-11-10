@@ -28,7 +28,7 @@ docker compose up -d --build
 API_PORT=8010 docker compose up -d --build
 
 # From Docker Hub, no local files needed
-docker run --rm -p 8000:8000 <dockerhub-username>/loan-api:1.0.0
+docker run --rm -p 8000:8000 meghoing/loan-api:1.0.0
 ```
 
 Example request:
