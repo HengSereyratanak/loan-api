@@ -27,6 +27,18 @@ def test_prediction_is_a_probability(client):
     assert body["risk_band"] in {"low", "medium", "high"}
 
 
+RISKY = {"amount_usd": 4800, "term_months": 6, "monthly_income_usd": 250.0, "previous_loans": 0, "late_payments": 3}
+
+
+def test_riskier_applicant_scores_higher(client):
+    """Catches an inverted score (1 - probability), the bug from the bad release drill."""
+    safe = client.post("/api/v1/predictions", json=GOOD).json()
+    risky = client.post("/api/v1/predictions", json=RISKY).json()
+    assert safe["default_probability"] < 0.2 and safe["risk_band"] == "low"
+    assert risky["default_probability"] > 0.5 and risky["risk_band"] == "high"
+    assert risky["default_probability"] > safe["default_probability"]
+
+
 def test_amount_above_limit_is_rejected(client):
     assert client.post("/api/v1/predictions", json={**GOOD, "amount_usd": 9000}).status_code == 422
 
