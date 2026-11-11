@@ -26,3 +26,10 @@ class Application(ApplicationCreate):
     id: int
     status: Literal["pending", "approved", "rejected"]
     prediction: Prediction
+    note: str | None = None
+
+
+class ApplicationUpdate(BaseModel):
+    """A manager's decision (updateApplication in the Module 2 contract)."""
+    status: Literal["approved", "rejected"]
+    note: str | None = Field(default=None, max_length=500, examples=["Approved after phone verification."])

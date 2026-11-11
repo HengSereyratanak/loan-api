@@ -8,7 +8,7 @@ import pandas as pd
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 
-from schemas import Application, ApplicationCreate, LoanFeatures, Prediction
+from schemas import Application, ApplicationCreate, ApplicationUpdate, LoanFeatures, Prediction
 
 ml = {}            # filled at start-up: {"predict_proba": ..., "version": ..., "features": [...]}
 APPLICATIONS = {}  # in-memory store; resets when the server restarts
@@ -90,4 +90,15 @@ def list_applications():
 def get_application(application_id: int):
     if application_id not in APPLICATIONS:
         raise HTTPException(status_code=404, detail=f"Application {application_id} not found")
+    return APPLICATIONS[application_id]
+
+
+@app.patch("/api/v1/applications/{application_id}", response_model=Application)
+def review_application(application_id: int, body: ApplicationUpdate):
+    if application_id not in APPLICATIONS:
+        raise HTTPException(status_code=404, detail=f"Application {application_id} not found")
+    current = APPLICATIONS[application_id]
+    if current.status != "pending":  # a decision is final
+        raise HTTPException(status_code=409, detail=f"Application {application_id} is already {current.status}")
+    APPLICATIONS[application_id] = current.model_copy(update=body.model_dump(exclude_none=True))
     return APPLICATIONS[application_id]
