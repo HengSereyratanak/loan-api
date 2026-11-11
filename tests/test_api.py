@@ -42,6 +42,22 @@ def test_missing_application_is_404(client):
     assert client.get("/api/v1/applications/99999").status_code == 404
 
 
+def test_manager_can_approve_once(client):
+    app_id = client.post("/api/v1/applications", json={**GOOD, "borrower_id": 1042}).json()["id"]
+    approved = client.patch(f"/api/v1/applications/{app_id}", json={"status": "approved", "note": "Phone verified"})
+    assert approved.status_code == 200
+    assert approved.json()["status"] == "approved"
+    assert approved.json()["note"] == "Phone verified"
+    again = client.patch(f"/api/v1/applications/{app_id}", json={"status": "rejected"})
+    assert again.status_code == 409  # a decision is final
+
+
+def test_review_rejects_unknown_status_and_missing_application(client):
+    app_id = client.post("/api/v1/applications", json={**GOOD, "borrower_id": 1042}).json()["id"]
+    assert client.patch(f"/api/v1/applications/{app_id}", json={"status": "pending"}).status_code == 422
+    assert client.patch("/api/v1/applications/99999", json={"status": "approved"}).status_code == 404
+
+
 def test_api_key_is_required_when_set(client, monkeypatch):
     monkeypatch.setattr(main, "API_KEY", "test-key")
     assert client.get("/health").status_code == 200  # stays open for health checks
