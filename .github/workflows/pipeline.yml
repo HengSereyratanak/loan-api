@@ -1,4 +1,4 @@
-# .github/workflows/pipeline.yml: test -> build and push
+# .github/workflows/pipeline.yml: test -> build and push -> deploy -> verify
 name: Test, build and deploy
 on:
   push:
@@ -35,3 +35,29 @@ jobs:
             -t $IMAGE:${{ github.sha }} -t $IMAGE:latest .
           docker push --all-tags $IMAGE
           echo "Pushed $IMAGE:${{ github.sha }} and $IMAGE:latest"
+  deploy:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ask Render to deploy this commit's image
+        run: |
+          IMAGE=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/loan-api:${{ github.sha }}
+          ENCODED=$(python3 -c "import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=''))" "$IMAGE")
+          curl -fsS -X POST "${{ secrets.RENDER_DEPLOY_HOOK }}&imgURL=$ENCODED"
+  verify:
+    needs: deploy
+    runs-on: ubuntu-latest
+    steps:
+      - name: Wait until the live API reports this commit
+        run: |
+          for attempt in $(seq 1 30); do
+            live_sha=$(curl -fsS --max-time 90 "${{ vars.APP_URL }}/health" | python3 -c "import sys, json; print(json.load(sys.stdin).get('git_sha', ''))" || true)
+            if [ "$live_sha" = "${{ github.sha }}" ]; then
+              echo "Deployed and healthy: $live_sha"
+              exit 0
+            fi
+            echo "Live version is '$live_sha', waiting ($attempt/30)"
+            sleep 20
+          done
+          echo "The new version did not go live in time"
+          exit 1
