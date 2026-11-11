@@ -4,3 +4,7 @@ __pycache__/
 .pytest_cache/
 model.joblib
 models/
+mlflow.db
+mlartifacts/
+mlruns/
+.env
